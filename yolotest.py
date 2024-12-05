@@ -1,13 +1,8 @@
 #Read a video and show
 from ultralytics import YOLO
 import cv2
-import os
-import random
 
 model = YOLO("best.pt")
-
-#Tracker
-tracker = cv2.TrackerMOSSE.create()
 
 
 classname = ["","Tree"]
