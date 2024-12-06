@@ -1,4 +1,7 @@
 ultralytics
 roboflow
 opencv-python
-ipykernel
+scikit-image
+tensorflow
+scikit-learn
+deep-sort-realtime

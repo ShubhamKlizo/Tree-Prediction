@@ -1,30 +1,33 @@
 from ultralytics import YOLO
 import cv2
-import os
 import random
+from deep_sort_realtime.deepsort_tracker import DeepSort
 
-# Initialize YOLO Model
-model = YOLO("best.pt")
-classname = ["", "Tree"]  # Note: Class index starts at 1 if your list begins with an empty string
+# Load YOLO model
+model = YOLO("custom-tree.pt")
 
-# Initialize Video Capture
+# Initialize Deep SORT tracker with parameters
+tracker = DeepSort(
+    max_age=10,  # Max frames to keep a track alive without detections
+    max_iou_distance=0.7,  # Max IoU distance for association
+    max_cosine_distance=0.2,  # Max cosine distance for appearance matching
+    nn_budget=None,  # Size of the embedding buffer; None means unlimited
+    embedder="mobilenet",  # Model used for generating appearance embeddings
+    half=True,  # Use half-precision floating-point calculations for efficiency
+    bgr=True,  # Process input frames as BGR color format (as used by OpenCV)
+    embedder_gpu=True  # Use GPU for the embedding model for faster processing
+)
+
+# Class names and colors
+classname = ["Tree"]
+#colors = [(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for _ in range(10)]
+
+# Load video capture
 cap = cv2.VideoCapture('media/1448735-uhd_4096_2160_24fps.mp4')
 
-# Tracker Setup
-tracker_name = 'MedianFlow'
-OPENCV_TRACKER_TYPES = {
-    'Boosting': cv2.TrackerBoosting.create(),
-    'MIL': cv2.TrackerMIL(),
-    'KCF': cv2.TrackerKCF(),
-    'TLD': cv2.TrackerTLD(),
-    'MedianFlow': cv2.TrackerMedianFlow(),
-    'GOTURN': cv2.TrackerGOTURN
-}
-tracker_type = OPENCV_TRACKER_TYPES[tracker_name]
-trackers = []  # To hold all active trackers
-detect_interval = 5  # Detect new objects every 5 frames
+# Set to keep track of unique tree IDs
+unique_track_ids = set()
 
-frame_index = 0
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -33,51 +36,39 @@ while cap.isOpened():
     # Resize the frame
     frame = cv2.resize(frame, (0, 0), fx=0.2, fy=0.2)
 
-    # **Detection Interval**
-    if frame_index % detect_interval == 0:
-        # Predict the frame
-        predictions = model.predict(frame)
+    # Predict the frame using YOLO
+    predictions = model.predict(frame)
 
-        # **Reset Trackers for New Detections**
-        trackers = []
+    # Process detections for Deep SORT
+    detections = []
+    for prediction in predictions:
+        for data in prediction.boxes.data.tolist():
+            x1, y1, x2, y2, score, class_id = data
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            class_id = int(class_id)
+            detections.append([[x1, y1, x2 - x1, y2 - y1], score, class_id])
 
-        for prediction in predictions:
-            detection = []
-            for data in prediction.boxes.data.tolist():
-                x1, y1, x2, y2, score, class_id = data
-                x1, y2, x2, y2, score, class_id = int(x1), int(y1), int(x2), int(y2), score, int(class_id)
 
-                # Initialize Tracker for Each Detection
-                ok, bbox = True, (x1, y1, x2 - x1, y2 - y1)  # x, y, w, h
-                tracker = tracker_type().init(frame, bbox)
-                trackers.append(tracker)
+    # Update tracks using Deep SORT
+    tracks = tracker.update_tracks(detections, frame=frame)
+    # Draw tracks and detections on the frame
+    for track in tracks:
+        if not track.is_confirmed():
+            continue
+        track_id = track.track_id
+        unique_track_ids.add(track_id)  # Add to unique track IDs set
+        ltrb = track.to_ltrb(orig=True)  # Use original detection coordinates if available
+        x1, y1, x2, y2 = map(int, ltrb) #left, top, right, bottom
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"ID: {track_id}", (x1, y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-                # Draw Detection Rectangle (Before Tracking)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, (f"{score:.2f},{classname[class_id]}"), (int(x1 + 5), int(y1) + 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 255, 225), 2)
-
-    else:
-        # **Update Trackers**
-        for i, tracker in enumerate(trackers):
-            ok, bbox = tracker.update(frame)
-            if ok:
-                p1 = (int(bbox[0]), int(bbox[1]))
-                p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
-                cv2.rectangle(frame, p1, p2, (255, 0, 0), 2, 1)
-                # Optional: Add text indicating the tracker ID or class
-                # cv2.putText(frame, f"Tracker {i}", p1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
-            else:
-                # Remove failed trackers
-                trackers.pop(i)
+    # Display the total number of unique trees
+    cv2.putText(frame, f"Total Unique Trees: {len(unique_track_ids)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
     # Display the resulting frame
     cv2.imshow('frame', frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
-
-    frame_index += 1
 
 cap.release()
 cv2.destroyAllWindows()
